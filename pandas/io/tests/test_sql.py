@@ -5,6 +5,9 @@ import sys
 
 import numpy as np
 
+from pandas.core.datetools import format as date_format
+from pandas.core.api import DataFrame, isnull
+
 import pandas.io.sql as sql
 import pandas.util.testing as tm
 from pandas import Series, Index, DataFrame
@@ -21,14 +24,14 @@ class TestSQLite(unittest.TestCase):
     def test_write_row_by_row(self):
         frame = tm.makeTimeDataFrame()
         frame.ix[0, 0] = np.nan
-        create_sql = sql.get_sqlite_schema(frame, 'test')
+        create_sql = sql.get_schema(frame, 'test', 'sqlite')
         self.db.execute(create_sql)
 
         cur = self.db.cursor()
 
         ins = "INSERT INTO test VALUES (%s, %s, %s, %s)"
         for idx, row in frame.iterrows():
-            fmt_sql = sql.format_query(ins, *row)
+            fmt_sql = format_query(ins, *row)
             sql.tquery(fmt_sql, cur=cur)
 
         self.db.commit()
@@ -39,7 +42,7 @@ class TestSQLite(unittest.TestCase):
 
     def test_execute(self):
         frame = tm.makeTimeDataFrame()
-        create_sql = sql.get_sqlite_schema(frame, 'test')
+        create_sql = sql.get_schema(frame, 'test', 'sqlite')
         self.db.execute(create_sql)
         ins = "INSERT INTO test VALUES (?, ?, ?, ?)"
 
@@ -53,7 +56,7 @@ class TestSQLite(unittest.TestCase):
 
     def test_schema(self):
         frame = tm.makeTimeDataFrame()
-        create_sql = sql.get_sqlite_schema(frame, 'test', {'A': 'DATETIME'})
+        create_sql = sql.get_schema(frame, 'test', 'sqlite')
         lines = create_sql.splitlines()
         for l in lines:
             tokens = l.split(' ')
@@ -61,7 +64,7 @@ class TestSQLite(unittest.TestCase):
                 self.assert_(tokens[1] == 'DATETIME')
 
         frame = tm.makeTimeDataFrame()
-        create_sql = sql.get_sqlite_schema(frame, 'test', keys=['A', 'B'])
+        create_sql = sql.get_schema(frame, 'test', 'sqlite', keys=['A', 'B'],)
         lines = create_sql.splitlines()
         self.assert_('PRIMARY KEY (A,B)' in create_sql)
         self.db.execute(create_sql)
@@ -177,6 +180,34 @@ class TestSQLite(unittest.TestCase):
         df = DataFrame({'From':np.ones(5)})
         #print sql.get_sqlite_schema(df, 'testkeywords')
         sql.write_frame(df, con = self.db, name = 'testkeywords')
+
+from datetime import datetime
+
+_formatters = {
+    datetime: lambda dt: "'%s'" % date_format(dt),
+    str: lambda x: "'%s'" % x,
+    np.str_: lambda x: "'%s'" % x,
+    unicode: lambda x: "'%s'" % x,
+    float: lambda x: "%.8f" % x,
+    int: lambda x: "%s" % x,
+    type(None): lambda x: "NULL",
+    np.float64: lambda x: "%.10f" % x,
+    bool: lambda x: "'%s'" % x,
+}
+
+def format_query(sql, *args):
+    """
+
+    """
+    processed_args = []
+    for arg in args:
+        if isinstance(arg, float) and isnull(arg):
+            arg = None
+
+        formatter = _formatters[type(arg)]
+        processed_args.append(formatter(arg))
+
+    return sql % tuple(processed_args)
 
 if __name__ == '__main__':
     # unittest.main()

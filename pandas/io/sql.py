@@ -2,7 +2,7 @@
 Collection of query wrappers / abstractions to both facilitate data
 retrieval and to reduce dependency on DB-specific API.
 """
-from datetime import datetime
+from datetime import datetime, date
 
 import numpy as np
 import traceback
@@ -158,137 +158,227 @@ def read_frame(sql, con, index_col=None, coerce_float=True):
 frame_query = read_frame
 
 
-def write_frame(frame, name=None, con=None, flavor='sqlite', append=False):
+def write_frame(frame, name, con, flavor='sqlite', if_exists='fail'):
     """
-    Write records stored in a DataFrame to SQLite. The index will currently be
-    dropped
+    Write records stored in a DataFrame to a SQL database.
+
+    Parameters
+    ----------
+    frame: DataFrame
+    name: name of SQL table
+    conn: an open SQL database connection object
+    flavor: {'sqlite', 'mysql', 'oracle'}, default 'sqlite' 
+    if_exists: {'fail', 'replace', 'append'}, default 'fail'
+        fail: If table exists, do nothing.
+        replace: If table exists, drop it, recreate it, and insert data.
+        append: If table exists, insert data.
     """
+    
+    exists = table_exists(name, con, flavor)
+    if if_exists == 'fail' and exists:
+        raise ValueError, "Table '%s' already exists." % name
+    if if_exists == 'append' and not exists:
+        raise ValueError, "Table '%s' does not exist. Cannot append." % name
+    if if_exists == 'replace' and exists:
+        cur = con.cursor()
+        cur.execute("DROP TABLE %s" % name)
+        cur.close()
+    if if_exists == 'replace' or not exists:
+        cur = con.cursor()
+        create_table = get_schema(frame, name, flavor)
+        cur.execute(create_table)
+        cur.close()
+
+    cur = con.cursor()
+    # Replace spaces in DataFrame column names with _.
+    safe_names = [s.replace(' ', '_').strip() for s in frame.columns]
     if flavor == 'sqlite':
-        schema = get_sqlite_schema(frame, name)
-        c = con # execute directly on the connection object
-        wildcard = '?'
+        bracketed_names = ['[' + column + ']' for column in safe_names]
+        col_names = ','.join(bracketed_names)
+        wildcards = ','.join(['?'] * len(safe_names))
+        insert_query = 'INSERT INTO %s (%s) VALUES (%s)' % (
+            name, col_names, wildcards)
+        data = [tuple(x) for x in frame.values]
+        cur.executemany(insert_query, data)
     elif flavor == 'mysql':
-        schema = get_mysql_schema(frame, name)
-        c = con.cursor() # MySQLdb can only exeute on a cursor object
-        wildcard = r'%s'
+        col_names = ','.join(safe_names)
+        wildcards = ','.join([r'%s'] * len(safe_names))
+        insert_query = "INSERT INTO %s (%s) VALUES (%s)" % (
+            name, col_names, wildcards)
+        print insert_query
+        data = [tuple(x) for x in frame.values]
+        cur.executemany(insert_query, data)
+    elif flavor == 'oracle':
+        col_names = ','.join(safe_names)
+        col_pos = ', '.join([':'+str(i+1) for i,f in enumerate(safe_names)])
+        insert_query = "INSERT INTO %s (%s) VALUES (%s)" % (
+            name, col_names, col_pos)
+        data = [sequence2dict(record) for record in frame.values]
+        cur.executemany(insert_query, data)
     else:
         raise NotImplementedError
+    cur.close()
+    con.commit()
 
-    if not append and not has_table(name, con, flavor):
-        c.execute(schema)
-
-    wildcards = ','.join([wildcard] * len(frame.columns))
-    insert_sql = 'INSERT INTO %s VALUES (%s)' % (name, wildcards)
-    data = [tuple(x) for x in frame.values]
-    c.executemany(insert_sql, data)
-
-    if flavor == 'mysql':
-        c.close() # Close cusor. Do not close connection.
-
-
-def has_table(name, con, flavor):
+def table_exists(name, con, flavor):
     if flavor == 'sqlite':
-        sqlstr = """SELECT name FROM sqlite_master
-                    WHERE type='table' AND name='%s'""" % name
-        rs = tquery(sqlstr, con)
-        return len(rs) > 0
+        query = """SELECT name FROM sqlite_master 
+                   WHERE type='table' AND name='%s';""" % name
     elif flavor == 'mysql':
-        sqlstr = "SHOW TABLES"
-        print name, tquery(sqlstr, con)
-        return name in tquery(sqlstr, con)
+        query = "SHOW TABLES LIKE '%s'" % name
+    elif flavor == 'postgresql':
+        query = "SELECT * FROM pg_tables WHERE tablename='%s';" % name
+    elif flavor == 'oracle':
+        query ="""SELECT table_name FROM user_tables
+                  WHERE table_name='%s'""" % name.upper()
+    elif flavor == 'odbc':
+        raise NotImplementedError
+    else:
+        raise NotImplementedError
+    return len(tquery(query, con)) > 0
 
-def get_sqlite_schema(frame, name, dtypes=None, keys=None):
-    template = """
-CREATE TABLE %(name)s (
-  %(columns)s%(keystr)s
-);"""
+def get_sqltype(pytype, flavor):
+    sqltype = {'mysql': 'VARCHAR',
+                'oracle': 'VARCHAR2',
+                'sqlite': 'TEXT',
+                'postgresql': 'TEXT'}
+    if issubclass(pytype, np.number):
+        sqltype['mysql'] = 'FLOAT'
+        sqltype['oracle'] = 'NUMBER'
+        sqltype['sqlite'] = 'REAL'
+        sqltype['postgresql'] = 'NUMBER'
+        if issubclass(pytype, np.integer):
+            # Assume 32 bit. TODO: Refine further down.
+            sqltype['mysql'] = 'INT'
+            sqltype['oracle'] = 'PLS_INTEGER'
+            sqltype['sqlite'] = 'INTEGER'
+            sqltype['postgresql'] = 'INTEGER' 
+    if issubclass(pytype, np.datetime64) or pytype is datetime:
+        # Caution: np.datetime64 is also a subclass of np.number.
+        sqltype['mysql'] = 'DATETIME'
+        sqltype['oracle'] = 'DATE'
+        sqltype['sqlite'] = 'TIMESTAMP'
+        sqltype['postgresql'] = 'TIMESTAMP'
+    if pytype is datetime.date:
+        sqltype['mysql'] = 'DATE'
+        sqltype['oracle'] = 'DATE'
+        sqltype['sqlite'] = 'TIMESTAMP'
+        sqltype['postgresql'] = 'TIMESTAMP'
+    return sqltype[flavor]
 
-    column_types = []
-
-    frame_types = frame.dtypes
-    for k in frame_types.index:
-        dt = frame_types[k]
-
-        if issubclass(dt.type, (np.integer, np.bool_)):
-            sqltype = 'INTEGER'
-        elif issubclass(dt.type, np.floating):
-            sqltype = 'REAL'
-        else:
-            sqltype = 'TEXT'
-
-        if dtypes is not None:
-            sqltype = dtypes.get(k, sqltype)
-
-        column_types.append((k, sqltype))
-    columns = ',\n  '.join('[%s] %s' % x for x in column_types)
-
+def get_schema(frame, name, flavor, keys=None):
+    "Return a CREATE TABLE statement to suit the contents of a DataFrame."
+    lookup_type = lambda dtype: get_sqltype(dtype.type, flavor)
+    # Replace spaces in DataFrame column names with _.
+    safe_columns = [s.replace(' ', '_').strip() for s in frame.dtypes.index]
+    column_types = zip(safe_columns, map(lookup_type, frame.dtypes))
+    if flavor == 'sqlite':
+        columns = ',\n  '.join('[%s] %s' % x for x in column_types)
+    else:
+        columns = ',\n  '.join('%s %s' % x for x in column_types)
     keystr = ''
     if keys is not None:
         if isinstance(keys, basestring):
             keys = (keys,)
         keystr = ', PRIMARY KEY (%s)' % ','.join(keys)
-    return template % {'name': name, 'columns': columns, 'keystr': keystr}
+    template = """CREATE TABLE %(name)s (
+                  %(columns)s
+                  %(keystr)s
+                  );"""
+    create_statement = template % {'name': name, 'columns': columns, 'keystr': keystr}
+    if flavor == 'oracle':
+        create_statement = create_statment.replace(';', '')
+    return create_statement
 
-def get_mysql_schema(frame, name, dtypes=None, keys=None):
-    template = """
-CREATE TABLE %(name)s (
-  %(columns)s%(keystr)s
-);"""
+def sequence2dict(seq):
+    """Helper function for cx_Oracle.
 
-    column_types = []
+    For each element in the sequence, creates a dictionary item equal
+    to the element and keyed by the position of the item in the list.
+    >>> sequence2dict(("Matt", 1))
+    {'1': 'Matt', '2': 1}
 
-    frame_types = frame.dtypes
-    for k in frame_types.index:
-        dt = frame_types[k]
-
-        # TODO: More specific types
-        if issubclass(dt.type, (np.integer, np.bool_)):
-            sqltype = 'INTEGER'
-        elif issubclass(dt.type, np.floating):
-            sqltype = 'REAL'
-        else:
-            sqltype = 'TEXT'
-
-        if dtypes is not None:
-            sqltype = dtypes.get(k, sqltype)
-
-        column_types.append((k, sqltype))
-    columns = ',\n  '.join('%s %s' % x for x in column_types)
-
-    keystr = ''
-    if keys is not None:
-        if isinstance(keys, basestring):
-            keys = (keys,)
-        keystr = ', PRIMARY KEY (%s)' % ','.join(keys)
-    return template % {'name': name, 'columns': columns, 'keystr': keystr}
-
-
-#------------------------------------------------------------------------------
-# Query formatting
-
-_formatters = {
-    datetime: lambda dt: "'%s'" % date_format(dt),
-    str: lambda x: "'%s'" % x,
-    np.str_: lambda x: "'%s'" % x,
-    unicode: lambda x: "'%s'" % x,
-    float: lambda x: "%.8f" % x,
-    int: lambda x: "%s" % x,
-    type(None): lambda x: "NULL",
-    np.float64: lambda x: "%.10f" % x,
-    bool: lambda x: "'%s'" % x,
-}
-
-
-def format_query(sql, *args):
+    Source:
+    http://www.gingerandjohn.com/archives/2004/02/26/cx_oracle-executemany-example/
     """
+    d = {}
+    for k,v in zip(range(1, 1 + len(seq)), seq):
+        d[str(k)] = v
+    return d
 
-    """
-    processed_args = []
-    for arg in args:
-        if isinstance(arg, float) and isnull(arg):
-            arg = None
+def test_sqlite(name, testdf):
+    print '\nsqlite, using detect_types=sqlite3.PARSE_DECLTYPES for datetimes'
+    import sqlite3
+    with sqlite3.connect('test.db', detect_types=sqlite3.PARSE_DECLTYPES) as conn:
+        #conn.row_factory = sqlite3.Row
+        write_frame(testdf, name, con=conn, flavor='sqlite', if_exists='replace')
+        df_sqlite = read_db('select * from '+name, con=conn)    
+        print 'loaded dataframe from sqlite', len(df_sqlite)   
+    print 'done with sqlite'
 
-        formatter = _formatters[type(arg)]
-        processed_args.append(formatter(arg))
 
-    return sql % tuple(processed_args)
+def test_oracle(name, testdf):
+    print '\nOracle'
+    import cx_Oracle
+    with cx_Oracle.connect('YOURCONNECTION') as ora_conn:
+        testdf['d64'] = np.datetime64( testdf['hire_date'] )
+        write_frame(testdf, name, con=ora_conn, flavor='oracle', if_exists='replace')    
+        df_ora2 = read_db('select * from '+name, con=ora_conn)    
+
+    print 'done with oracle'
+    return df_ora2
+   
+    
+def test_postgresql(name, testdf):
+    #from pg8000 import DBAPI as pg
+    import psycopg2 as pg
+    print '\nPostgresQL, Greenplum'    
+    pgcn = pg.connect(YOURCONNECTION)
+    print 'df frame_query'
+    try:
+        write_frame(testdf, name, con=pgcn, flavor='postgresql', if_exists='replace')   
+        print 'pg copy_from'    
+        postgresql_copy_from(testdf, name, con=pgcn)    
+        df_gp = read_db('select * from '+name, con=pgcn)    
+        print 'loaded dataframe from greenplum', len(df_gp)
+    finally:
+        pgcn.commit()
+        pgcn.close()
+    print 'done with greenplum'
+
+ 
+def test_mysql(name, testdf):
+    import MySQLdb
+    print '\nmysql'
+    cn= MySQLdb.connect(YOURCONNECTION)    
+    try:
+        write_frame(testdf, name='test_df', con=cn, flavor='mysql', if_exists='replace')
+        df_mysql = read_db('select * from '+name, con=cn)    
+        print 'loaded dataframe from mysql', len(df_mysql)
+    finally:
+        cn.close()
+    print 'mysql done'
+
+
+##############################################################################
+
+if __name__=='__main__':
+
+    print """sqlite should work out of the box. For the other test, you must
+             install the driver and provide a connection string."""
+    
+    test_data = {
+        "name": [ 'Joe', 'Bob', 'Jim', 'Suzy', 'Cathy', 'Sarah' ],
+        "hire_date": [ datetime(2012,1,1), datetime(2012,2,1), datetime(2012,3,1), datetime(2012,4,1), datetime(2012,5,1), datetime(2012,6,1) ],
+        "erank": [ 1,   2,   3,   4,   5,   6  ],
+        "score": [ 1.1, 2.2, 3.1, 2.5, 3.6, 1.8]
+    }
+    df = DataFrame(test_data)
+
+    name='test_df'
+    test_sqlite(name, df)
+    #test_oracle(name, df)
+    #test_postgresql(name, df)    
+    test_mysql(name, df)        
+    
+    print 'done'
