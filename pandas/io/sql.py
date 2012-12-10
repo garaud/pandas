@@ -165,23 +165,37 @@ def write_frame(frame, name=None, con=None, flavor='sqlite', append=False):
     """
     if flavor == 'sqlite':
         schema = get_sqlite_schema(frame, name)
+        c = con # execute directly on the connection object
+        wildcard = '?'
+    elif flavor == 'mysql':
+        schema = get_mysql_schema(frame, name)
+        c = con.cursor() # MySQLdb can only exeute on a cursor object
+        wildcard = r'%s'
     else:
         raise NotImplementedError
 
-    if not append and not has_table(name, con):
-        con.execute(schema)
+    if not append and not has_table(name, con, flavor):
+        c.execute(schema)
 
-    wildcards = ','.join(['?'] * len(frame.columns))
+    wildcards = ','.join([wildcard] * len(frame.columns))
     insert_sql = 'INSERT INTO %s VALUES (%s)' % (name, wildcards)
     data = [tuple(x) for x in frame.values]
-    con.executemany(insert_sql, data)
+    c.executemany(insert_sql, data)
+
+    if flavor == 'mysql':
+        c.close() # Close cusor. Do not close connection.
 
 
-def has_table(name, con):
-    sqlstr = "SELECT name FROM sqlite_master WHERE type='table' AND name='%s'" % name
-    rs = tquery(sqlstr, con)
-    return len(rs) > 0
-
+def has_table(name, con, flavor):
+    if flavor == 'sqlite':
+        sqlstr = """SELECT name FROM sqlite_master
+                    WHERE type='table' AND name='%s'""" % name
+        rs = tquery(sqlstr, con)
+        return len(rs) > 0
+    elif flavor == 'mysql':
+        sqlstr = "SHOW TABLES"
+        print name, tquery(sqlstr, con)
+        return name in tquery(sqlstr, con)
 
 def get_sqlite_schema(frame, name, dtypes=None, keys=None):
     template = """
@@ -207,6 +221,39 @@ CREATE TABLE %(name)s (
 
         column_types.append((k, sqltype))
     columns = ',\n  '.join('[%s] %s' % x for x in column_types)
+
+    keystr = ''
+    if keys is not None:
+        if isinstance(keys, basestring):
+            keys = (keys,)
+        keystr = ', PRIMARY KEY (%s)' % ','.join(keys)
+    return template % {'name': name, 'columns': columns, 'keystr': keystr}
+
+def get_mysql_schema(frame, name, dtypes=None, keys=None):
+    template = """
+CREATE TABLE %(name)s (
+  %(columns)s%(keystr)s
+);"""
+
+    column_types = []
+
+    frame_types = frame.dtypes
+    for k in frame_types.index:
+        dt = frame_types[k]
+
+        # TODO: More specific types
+        if issubclass(dt.type, (np.integer, np.bool_)):
+            sqltype = 'INTEGER'
+        elif issubclass(dt.type, np.floating):
+            sqltype = 'REAL'
+        else:
+            sqltype = 'TEXT'
+
+        if dtypes is not None:
+            sqltype = dtypes.get(k, sqltype)
+
+        column_types.append((k, sqltype))
+    columns = ',\n  '.join('%s %s' % x for x in column_types)
 
     keystr = ''
     if keys is not None:
