@@ -379,6 +379,6 @@ if __name__=='__main__':
     test_sqlite(name, df)
     #test_oracle(name, df)
     #test_postgresql(name, df)    
-    test_mysql(name, df)        
+    #test_mysql(name, df)        
     
     print 'done'
