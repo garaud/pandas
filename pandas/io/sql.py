@@ -205,7 +205,6 @@ def write_frame(frame, name, con, flavor='sqlite', if_exists='fail'):
         wildcards = ','.join([r'%s'] * len(safe_names))
         insert_query = "INSERT INTO %s (%s) VALUES (%s)" % (
             name, col_names, wildcards)
-        print insert_query
         data = [tuple(x) for x in frame.values]
         cur.executemany(insert_query, data)
     elif flavor == 'oracle':
