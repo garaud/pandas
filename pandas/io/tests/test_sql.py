@@ -434,8 +434,9 @@ class TestMySQL(unittest.TestCase):
         '''
         '''
         _skip_if_no_MySQLdb()
-        #df = DataFrame({'From':np.ones(5)})
-        #sql.write_frame(df, con = self.db, name = 'testkeywords')
+        df = DataFrame({'From':np.ones(5)})
+        sql.write_frame(df, con = self.db, name = 'testkeywords', 
+                        if_exists='replace', flavor='mysql')
 
 
 if __name__ == '__main__':

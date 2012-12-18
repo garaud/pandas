@@ -202,7 +202,8 @@ def write_frame(frame, name, con, flavor='sqlite', if_exists='fail'):
         data = [tuple(x) for x in frame.values]
         cur.executemany(insert_query, data)
     elif flavor == 'mysql':
-        col_names = ','.join(safe_names)
+        bracketed_names = ['`' + column + '`' for column in safe_names]
+        col_names = ','.join(bracketed_names)
         wildcards = ','.join([r'%s'] * len(safe_names))
         insert_query = "INSERT INTO %s (%s) VALUES (%s)" % (
             name, col_names, wildcards)
@@ -275,7 +276,7 @@ def get_schema(frame, name, flavor, keys=None):
     if flavor == 'sqlite':
         columns = ',\n  '.join('[%s] %s' % x for x in column_types)
     else:
-        columns = ',\n  '.join('%s %s' % x for x in column_types)
+        columns = ',\n  '.join('`%s` %s' % x for x in column_types)
     keystr = ''
     if keys is not None:
         if isinstance(keys, basestring):
