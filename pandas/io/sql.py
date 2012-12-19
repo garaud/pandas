@@ -158,7 +158,7 @@ def read_frame(sql, con, index_col=None, coerce_float=True):
 frame_query = read_frame
 
 
-def write_frame(frame, name, con, flavor='sqlite', if_exists='fail'):
+def write_frame(frame, name, con, flavor='sqlite', if_exists='fail', **kwargs):
     """
     Write records stored in a DataFrame to a SQL database.
 
@@ -174,6 +174,14 @@ def write_frame(frame, name, con, flavor='sqlite', if_exists='fail'):
         append: If table exists, insert data.
     """
     
+    if 'append' in kwargs:
+        import warnings
+        warnings.warn("append is deprecated, use if_exists instead", 
+                      FutureWarning)
+        if kwargs['append']:
+            if_exists='append'
+        else:
+            if_exists='fail'
     exists = table_exists(name, con, flavor)
     if if_exists == 'fail' and exists:
         raise ValueError, "Table '%s' already exists." % name
@@ -186,7 +194,6 @@ def write_frame(frame, name, con, flavor='sqlite', if_exists='fail'):
     if if_exists == 'replace' or not exists:
         cur = con.cursor()
         create_table = get_schema(frame, name, flavor)
-        print create_table
         cur.execute(create_table)
         cur.close()
 
@@ -249,8 +256,8 @@ def get_sqltype(pytype, flavor):
         sqltype['sqlite'] = 'REAL'
         sqltype['postgresql'] = 'NUMBER'
         if issubclass(pytype, np.integer):
-            # Assume 32 bit. TODO: Refine further down.
-            sqltype['mysql'] = 'INT'
+            #TODO: Refine integer size.
+            sqltype['mysql'] = 'BIGINT'
             sqltype['oracle'] = 'PLS_INTEGER'
             sqltype['sqlite'] = 'INTEGER'
             sqltype['postgresql'] = 'INTEGER' 
