@@ -48,6 +48,12 @@ def _skip_if_no_MySQLdb():
     except ImportError:
         raise nose.SkipTest('MySQLdb not installed, skipping')
 
+def _skip_if_no_psycopg2():
+    try:
+        import psycopg2
+    except ImportError:
+        raise nose.SkipTest('psycopg2 -- module for PostgreSQL -- not installed, skipping')
+
 class TestSQLite(unittest.TestCase):
     _multiprocess_can_split_ = True
     def setUp(self):
@@ -444,6 +450,26 @@ class TestMySQL(unittest.TestCase):
         df = DataFrame({'From':np.ones(5)})
         sql.write_frame(df, con = self.db, name = 'testkeywords', 
                         if_exists='replace', flavor='mysql')
+
+class TestPostgreSQL(unittest.TestCase):
+    _multiprocess_can_split_ = True
+    def setUp(self):
+        try:
+            import psycopg2
+        except ImportError:
+            raise nose.SkipTest('psycopg2 -- module for PostgreSQL -- not installed, skipping')
+        try:
+            self.db = psycopg2.connect(database='postgre-pandas-test') # Better idea?
+        except psycopg2.Error, e:
+        # except psycopg2.OperationalError, e: # Should use this as error type?
+            raise nose.SkipTest(
+                "Cannot connect to a Postgre database. "
+                "'createdb postgre-pandas-test' "
+                "on you localhost if you have the right permissions.")
+
+    def test_assert(self):
+        _skip_if_no_psycopg2()
+        self.assertTrue(False)
 
 
 if __name__ == '__main__':
