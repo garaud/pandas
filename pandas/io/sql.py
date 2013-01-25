@@ -223,6 +223,22 @@ def write_frame(frame, name, con, flavor='sqlite', if_exists='fail', **kwargs):
             name, col_names, col_pos)
         data = [sequence2dict(record) for record in frame.values]
         cur.executemany(insert_query, data)
+    elif flavor == 'postgresql':
+        # XXX Fix it.
+        bracketed_names = [column for column in safe_names]
+        col_names = ','.join(bracketed_names)
+        # wildcards = ', '.join([r'%'+'(%s)s' % x for x in xrange(1,len(safe_names)+1)])
+        wildcards = ', '.join([r'%'+'(%s)s' % x for x in xrange(1,len(safe_names)+1)])
+        insert_query = "INSERT INTO %s(%s) VALUES (%s);" % (
+            name, col_names, wildcards)
+        # print(safe_names)
+        # print(wildcards)
+        print(insert_query)
+        #data = dict([(k,x) for k,x in frame.iteritems()])
+        data = [sequence2dict(record) for record in frame.values]
+        # data = [tuple(x) for x in frame.values]
+        print(data[:20])
+        cur.executemany(insert_query, data)
     else:
         raise NotImplementedError
     cur.close()
@@ -254,13 +270,13 @@ def get_sqltype(pytype, flavor):
         sqltype['mysql'] = 'FLOAT'
         sqltype['oracle'] = 'NUMBER'
         sqltype['sqlite'] = 'REAL'
-        sqltype['postgresql'] = 'NUMBER'
-        if issubclass(pytype, np.integer):
-            #TODO: Refine integer size.
-            sqltype['mysql'] = 'BIGINT'
-            sqltype['oracle'] = 'PLS_INTEGER'
-            sqltype['sqlite'] = 'INTEGER'
-            sqltype['postgresql'] = 'INTEGER' 
+        sqltype['postgresql'] = 'FLOAT'
+    if issubclass(pytype, np.integer):
+        #TODO: Refine integer size.
+        sqltype['mysql'] = 'BIGINT'
+        sqltype['oracle'] = 'PLS_INTEGER'
+        sqltype['sqlite'] = 'INTEGER'
+        sqltype['postgresql'] = 'INTEGER'
     if issubclass(pytype, np.datetime64) or pytype is datetime:
         # Caution: np.datetime64 is also a subclass of np.number.
         sqltype['mysql'] = 'DATETIME'
@@ -282,6 +298,8 @@ def get_schema(frame, name, flavor, keys=None):
     column_types = zip(safe_columns, map(lookup_type, frame.dtypes))
     if flavor == 'sqlite':
         columns = ',\n  '.join('[%s] %s' % x for x in column_types)
+    if flavor == 'postgresql':
+        columns = ',\n  '.join('%s %s' % x for x in column_types)
     else:
         columns = ',\n  '.join('`%s` %s' % x for x in column_types)
     keystr = ''

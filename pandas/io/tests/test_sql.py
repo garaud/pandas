@@ -458,8 +458,10 @@ class TestPostgreSQL(unittest.TestCase):
             import psycopg2
         except ImportError:
             raise nose.SkipTest('psycopg2 -- module for PostgreSQL -- not installed, skipping')
+        self.database_name = 'postgre-pandas-test'
+        self.flavor = 'postgresql'
         try:
-            self.db = psycopg2.connect(database='postgre-pandas-test') # Better idea?
+            self.db = psycopg2.connect(database=self.database_name)
         except psycopg2.Error, e:
         # except psycopg2.OperationalError, e: # Should use this as error type?
             raise nose.SkipTest(
@@ -467,9 +469,52 @@ class TestPostgreSQL(unittest.TestCase):
                 "'createdb postgre-pandas-test' "
                 "on you localhost if you have the right permissions.")
 
-    def test_assert(self):
+    def test_basic(self):
         _skip_if_no_psycopg2()
-        self.assertTrue(False)
+        frame = tm.makeTimeDataFrame()
+        self._check_roundtrip(frame)
+
+    def _check_roundtrip(self, frame):
+        _skip_if_no_psycopg2()
+        drop_sql = "DROP TABLE IF EXISTS test_table;"
+        cur = self.db.cursor()
+        cur.execute(drop_sql)
+        sql.write_frame(frame, name='test_table', con=self.db, flavor=self.flavor)
+        result = sql.read_frame("SELECT * FROM test_table;", self.db)
+
+        # HACK!
+        result.index = frame.index
+
+        expected = frame
+        tm.assert_frame_equal(result, expected)
+
+        frame['txt'] = ['a'] * len(frame)
+        frame2 = frame.copy()
+        frame2['Idx'] = Index(range(len(frame2))) + 10
+        drop_sql = "DROP TABLE IF EXISTS test_table2"
+        cur = self.db.cursor()
+        cur.execute(drop_sql)
+        sql.write_frame(frame2, name='test_table2', con=self.db, flavor='mysql')
+        result = sql.read_frame("select * from test_table2", self.db,
+                                index_col='Idx')
+        expected = frame.copy()
+        expected.index = Index(range(len(frame2))) + 10
+        tm.assert_frame_equal(expected, result)
+
+    # def test_tquery(self):
+    #     frame = tm.makeTimeDataFrame()
+    #     print frame
+    #     sql.write_frame(frame, name='test_table', con=self.db,
+    #                     flavor=self.flavor)
+    #     # sql.write_frame(frame, name='test_table', con=self.db)
+    #     result = sql.tquery("SELECT A from test_table;", self.db)
+    #     expected = frame.A
+    #     result = Series(result, frame.index)
+    #     tm.assert_series_equal(result, expected)
+
+    # def test_table_exist(self):
+    #     self.assertTrue(sql.table_exists(self.database_name, self.db,
+    #                                      self.flavor))
 
 
 if __name__ == '__main__':
